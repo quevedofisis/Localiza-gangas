@@ -38,7 +38,7 @@ def escanear():
         precio = float(re.sub(r"[^\d.]", "", precio_texto))
 
         # En esta web de prueba el libro más barato cuesta 13.99, así que avisará con < 15.0
-        if precio < 15.0 and enlace not in historial:
+        if precio < 60.0 and enlace not in historial:
             msg = f"🚨 <b>CHOLLO DETECTADO</b>\n📦 {titulo}\n💰 Precio: <b>{precio}</b>\n🔗 <a href='{enlace}'>Ver producto</a>"
             enviar_telegram(msg)
             historial.append(enlace)
