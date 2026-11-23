@@ -3,7 +3,6 @@ import re
 import json
 import requests
 from bs4 import BeautifulSoup
-from curl_cffi import requests as cffi_requests
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
@@ -45,9 +44,10 @@ def limpiar_precio(texto):
     except ValueError:
         return None
 
-# --- RADAR 1: CHOLLOMETRO (Errores de precio globales y >= 80%) ---
-def escanear_chollometro(historial):
+def escanear_chollometro():
+    historial = cargar_historial()
     url = "https://chollometro.com"
+    
     try:
         resp = requests.get(url, headers=HEADERS, timeout=20)
         print("Chollometro status:", resp.status_code)
@@ -89,85 +89,18 @@ def escanear_chollometro(historial):
                 etiqueta_precio = precio_texto if precio_texto else "Ver en enlace"
                 info_dto = f" ({descuento}% dto.)" if descuento > 0 else ""
                 msg = (
-                    f"🚨 <b>CHOLLO DETECTADO (Chollometro)</b> 🚨\n\n"
+                    f"🚨 <b>CHOLLO DETECTADO</b> 🚨\n\n"
                     f"📦 <b>{titulo}</b>\n"
                     f"💰 Precio: <b>{etiqueta_precio}</b>{info_dto}\n"
                     f"🔗 <a href='{enlace}'>Ir al chollo</a>"
                 )
                 enviar_telegram(msg)
+                print("Alerta enviada:", titulo)
                 historial.append(enlace)
+
+        guardar_historial(historial)
     except Exception as e:
         print("Error en Chollometro:", e)
 
-# --- RADAR 2: DEPORVILLAGE OUTLET (Con huella de Chrome real) ---
-def escanear_deporvillage(historial):
-    url = "https://deporvillage.com"
-    try:
-        # Imitamos un navegador Chrome real para saltar el bloqueo 403
-        resp = cffi_requests.get(url, impersonate="chrome124", timeout=25)
-        print("Deporvillage status:", resp.status_code)
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        enlaces_vistos = set()
-        productos_detectados = 0
-
-        for a in soup.find_all("a", href=True):
-            href = a["href"]
-            if href.startswith("/") and len(href) > 15 and ":" not in href and "/outlet" not in href:
-                tarjeta = a.find_parent(["article", "li", "div"])
-                if not tarjeta:
-                    continue
-
-                texto_tarjeta = tarjeta.get_text(" ", strip=True)
-                if "€" not in texto_tarjeta or len(texto_tarjeta) > 350:
-                    continue
-
-                enlace_completo = "https://deporvillage.com" + href
-                if enlace_completo in enlaces_vistos:
-                    continue
-                enlaces_vistos.add(enlace_completo)
-                productos_detectados += 1
-
-                if enlace_completo in historial:
-                    continue
-
-                precios_encontrados = re.findall(r"(\d+[.,]\d{2})\s*€", texto_tarjeta)
-                valores = [float(p.replace(",", ".")) for p in precios_encontrados]
-
-                descuento = 0
-                for d in re.findall(r"-?\s*(\d{2})\s*%", texto_tarjeta):
-                    if int(d) > descuento:
-                        descuento = int(d)
-
-                if len(valores) >= 2:
-                    precio_actual = min(valores)
-                    precio_original = max(valores)
-                    if precio_original > precio_actual:
-                        calc = round(((precio_original - precio_actual) / precio_original) * 100)
-                        if calc > descuento:
-                            descuento = calc
-                elif len(valores) == 1:
-                    precio_actual = valores
-                else:
-                    continue
-
-                if precio_actual == 0.0 or descuento >= 75:
-                    titulo = a.get("title") or a.get_text(strip=True) or "Producto Deporvillage"
-                    msg = (
-                        f"🏃‍♂️ <b>CHOLLO EN DEPORVILLAGE</b> 🏃‍♂️\n\n"
-                        f"📦 <b>{titulo}</b>\n"
-                        f"💰 Precio: <b>{precio_actual:.2f} €</b> ({descuento}% dto.)\n"
-                        f"🔗 <a href='{enlace_completo}'>Ver en Deporvillage</a>"
-                    )
-                    enviar_telegram(msg)
-                    historial.append(enlace_completo)
-
-        print(f"Deporvillage productos analizados: {productos_detectados}")
-    except Exception as e:
-        print("Error en Deporvillage:", e)
-
 if __name__ == "__main__":
-    hist = cargar_historial()
-    escanear_chollometro(hist)
-    escanear_deporvillage(hist)
-    guardar_historial(hist)
+    escanear_chollometro()
