@@ -8,11 +8,11 @@ TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 ARCHIVO_HISTORIAL = "historial.json"
 
-URL_RSS = "https://chollometro.com"
+URL_TIENDA = "https://chollometro.com"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "application/rss+xml, application/xml, text/xml, */*"
+    "Accept-Language": "es-ES,es;q=0.9"
 }
 
 def cargar_historial():
@@ -39,69 +39,83 @@ def enviar_telegram(mensaje):
     }
     requests.post(url, data=payload)
 
-def analizar_chollo(titulo, descripcion_html):
-    texto_limpio = BeautifulSoup(descripcion_html, "html.parser").get_text(" ")
-    todo_el_texto = f"{titulo} {texto_limpio}".lower()
-
-    # 1. Buscar palabras clave de error de precio o gratis
-    palabras_clave = [
-        "error de precio", "0€", "0 €", "0,00€", "0,00 €", 
-        "gratis", "100% dto", "100% de descuento", "chollazo"
-    ]
-    for palabra in palabras_clave:
-        if palabra in todo_el_texto:
-            return True, f"Palabra clave: '{palabra}'"
-
-    # 2. Buscar porcentajes de descuento del 80% al 100%
-    descuentos = re.findall(r"(\d{2,3})\s*%", todo_el_texto)
-    for d in descuentos:
-        if 80 <= int(d) <= 100:
-            return True, f"Descuento extremo: {d}%"
-
-    return False, ""
+def limpiar_precio(texto):
+    # Convierte "19,99€" o "0€" en número decimal (19.99 o 0.0)
+    limpio = re.sub(r"[^\d,]", "", texto).replace(",", ".")
+    try:
+        return float(limpio) if limpio else None
+    except ValueError:
+        return None
 
 def escanear():
     historial = cargar_historial()
-    respuesta = requests.get(URL_RSS, headers=HEADERS, timeout=20)
-    print("Código de respuesta de Chollometro:", respuesta.status_code)
+    respuesta = requests.get(URL_TIENDA, headers=HEADERS, timeout=20)
+    print("Código de respuesta:", respuesta.status_code)
 
-    # Usamos BeautifulSoup en modo HTML/XML tolerante a fallos
     soup = BeautifulSoup(respuesta.text, "html.parser")
-    items = soup.find_all("item")
-    print(f"Chollos encontrados para analizar: {len(items)}")
+    # En Chollometro cada publicación es una etiqueta <article>
+    articulos = soup.find_all("article")
+    print(f"Publicaciones detectadas en portada: {len(articulos)}")
 
-    if len(items) == 0:
-        print("Aviso: No se encontraron items. Primeras letras recibidas:", respuesta.text[:200])
+    for art in articulos:
+        try:
+            # 1. Extraer enlace y título principal
+            enlace_el = art.select_one("a.cept-tt, a[href*='/ofertas/'], a[href*='/cupones/']")
+            if not enlace_el:
+                continue
 
-    for item in items:
-        titulo_tag = item.find("title")
-        titulo = titulo_tag.get_text(strip=True) if titulo_tag else "Sin título"
-        
-        # En BeautifulSoup html.parser el enlace suele ir justo detrás de <link>
-        link_tag = item.find("link")
-        enlace = link_tag.next_sibling.strip() if (link_tag and link_tag.next_sibling) else ""
-        if not enlace.startswith("http"):
-            guid_tag = item.find("guid")
-            enlace = guid_tag.get_text(strip=True) if guid_tag else ""
+            titulo = enlace_el.get_text(strip=True)
+            enlace = enlace_el.get("href", "")
+            if enlace.startswith("/"):
+                enlace = "https://chollometro.com" + enlace
 
-        desc_tag = item.find("description")
-        descripcion = desc_tag.get_text() if desc_tag else ""
+            if not enlace or enlace in historial:
+                continue
 
-        if not enlace or enlace in historial:
+            texto_completo = art.get_text(" ", strip=True)
+            texto_lower = texto_completo.lower()
+
+            # 2. Extraer precio actual y precio anterior si existen
+            precio_el = art.select_one(".thread-price, .cept-tp")
+            precio_texto = precio_el.get_text(strip=True) if precio_el else ""
+            precio_actual = limpiar_precio(precio_texto)
+
+            precio_ant_el = art.select_one(".mute--text.text--lineThrough, .cept-next-best-price")
+            precio_ant_texto = precio_ant_el.get_text(strip=True) if precio_ant_el else ""
+            precio_anterior = limpiar_precio(precio_ant_texto)
+
+            # 3. Calcular porcentaje de descuento real
+            descuento = 0
+            if precio_actual is not None and precio_anterior and precio_anterior > precio_actual:
+                descuento = round(((precio_anterior - precio_actual) / precio_anterior) * 100)
+
+            # Buscar también porcentajes escritos en el título o etiqueta (ej. "-85%")
+            porcentajes = re.findall(r"(\d{2,3})\s*%", texto_lower)
+            for p in porcentajes:
+                if int(p) > descuento and int(p) <= 100:
+                    descuento = int(p)
+
+            # 4. REGLAS DE ALERTA (0€, Gratis, Error de precio o >= 80% descuento)
+            es_gratis = (precio_actual == 0.0) or ("gratis" in texto_lower) or ("0€" in texto_lower) or ("0 €" in texto_lower)
+            es_error = ("error de precio" in texto_lower) or ("bug" in texto_lower)
+            es_super_descuento = (descuento >= 80)
+
+            if es_gratis or es_error or es_super_descuento:
+                etiqueta_precio = precio_texto if precio_texto else "Ver en enlace"
+                info_dto = f" ({descuento}% dto.)" if descuento > 0 else ""
+
+                msg = (
+                    f"🚨 <b>CHOLLO EXTREMO / ERROR DETECTADO</b> 🚨\n\n"
+                    f"📦 <b>{titulo}</b>\n"
+                    f"💰 Precio: <b>{etiqueta_precio}</b>{info_dto}\n"
+                    f"🔗 <a href='{enlace}'>Abrir chollo en Chollometro</a>"
+                )
+                enviar_telegram(msg)
+                print("Alerta enviada:", titulo)
+                historial.append(enlace)
+
+        except Exception:
             continue
-
-        es_chollo, motivo = analizar_chollo(titulo, descripcion)
-
-        if es_chollo:
-            msg = (
-                f"🚨 <b>POSIBLE ERROR / CHOLLO EXTREMO</b> 🚨\n\n"
-                f"📦 <b>{titulo}</b>\n"
-                f"🎯 Motivo: <i>{motivo}</i>\n"
-                f"🔗 <a href='{enlace}'>Ir al chollo ahora</a>"
-            )
-            enviar_telegram(msg)
-            print("Alerta enviada:", titulo)
-            historial.append(enlace)
 
     guardar_historial(historial)
 
