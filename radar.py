@@ -3,6 +3,7 @@ import re
 import json
 import requests
 from bs4 import BeautifulSoup
+from curl_cffi import requests as cffi_requests
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
@@ -62,7 +63,7 @@ def escanear_chollometro(historial):
             titulo = enlace_el.get_text(strip=True)
             enlace = enlace_el.get("href", "")
             if enlace.startswith("/"):
-                enlace = "https://www.chollometro.com" + enlace
+                enlace = "https://chollometro.com" + enlace
 
             if not enlace or enlace in historial:
                 continue
@@ -98,22 +99,20 @@ def escanear_chollometro(historial):
     except Exception as e:
         print("Error en Chollometro:", e)
 
-# --- RADAR 2: DEPORVILLAGE OUTLET (0€ o >= 75% de descuento) ---
+# --- RADAR 2: DEPORVILLAGE OUTLET (Con huella de Chrome real) ---
 def escanear_deporvillage(historial):
-    # Puedes cambiar esta URL por una categoría concreta (ej. /zapatillas-running-outlet)
-    url = "https://www.deporvillage.com/outlet"
+    url = "https://deporvillage.com"
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=20)
+        # Imitamos un navegador Chrome real para saltar el bloqueo 403
+        resp = cffi_requests.get(url, impersonate="chrome124", timeout=25)
         print("Deporvillage status:", resp.status_code)
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        # Buscamos todos los enlaces a fichas de producto dentro de la cuadrícula
         enlaces_vistos = set()
         productos_detectados = 0
 
         for a in soup.find_all("a", href=True):
             href = a["href"]
-            # Las fichas de producto de Deporvillage tienen formato /nombre-del-producto
             if href.startswith("/") and len(href) > 15 and ":" not in href and "/outlet" not in href:
                 tarjeta = a.find_parent(["article", "li", "div"])
                 if not tarjeta:
@@ -123,7 +122,7 @@ def escanear_deporvillage(historial):
                 if "€" not in texto_tarjeta or len(texto_tarjeta) > 350:
                     continue
 
-                enlace_completo = "https://www.deporvillage.com" + href
+                enlace_completo = "https://deporvillage.com" + href
                 if enlace_completo in enlaces_vistos:
                     continue
                 enlaces_vistos.add(enlace_completo)
@@ -132,11 +131,9 @@ def escanear_deporvillage(historial):
                 if enlace_completo in historial:
                     continue
 
-                # Extraer precios que aparezcan en la tarjeta (ej. "24,95 €" y "99,95 €")
                 precios_encontrados = re.findall(r"(\d+[.,]\d{2})\s*€", texto_tarjeta)
                 valores = [float(p.replace(",", ".")) for p in precios_encontrados]
 
-                # Extraer porcentaje si aparece (ej. "-75%")
                 descuento = 0
                 for d in re.findall(r"-?\s*(\d{2})\s*%", texto_tarjeta):
                     if int(d) > descuento:
@@ -150,11 +147,10 @@ def escanear_deporvillage(historial):
                         if calc > descuento:
                             descuento = calc
                 elif len(valores) == 1:
-                    precio_actual = valores[0]
+                    precio_actual = valores
                 else:
                     continue
 
-                # Condición: precio 0€ o descuento >= 75%
                 if precio_actual == 0.0 or descuento >= 75:
                     titulo = a.get("title") or a.get_text(strip=True) or "Producto Deporvillage"
                     msg = (
