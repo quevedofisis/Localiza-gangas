@@ -188,13 +188,4 @@ if __name__ == "__main__":
         historial=hist
     )
 
-    # 4. Tienda Padelpoint Outlet
-    escanear_tienda_padel(
-        nombre_tienda="Padelpoint",
-        url_outlet="https://tiendapadelpoint.com",
-        dominio_base="https://tiendapadelpoint.com",
-        selector_tarjeta=".product-item, .product-miniature, article, .item-product",
-        historial=hist
-    )
-
     guardar_historial(hist)
