@@ -24,7 +24,7 @@ def cargar_historial():
 
 def guardar_historial(historial):
     with open(ARCHIVO_HISTORIAL, "w", encoding="utf-8") as f:
-        json.dump(historial[-500:], f, indent=2)
+        json.dump(historial[-800:], f, indent=2)
 
 def enviar_telegram(mensaje):
     servidor = "https://api." + "telegram.org"
@@ -44,10 +44,9 @@ def limpiar_precio(texto):
     except ValueError:
         return None
 
-def escanear_chollometro():
-    historial = cargar_historial()
+# --- RADAR 1: CHOLLOMETRO (Errores globales y >= 80%) ---
+def escanear_chollometro(historial):
     url = "https://chollometro.com"
-    
     try:
         resp = requests.get(url, headers=HEADERS, timeout=20)
         print("Chollometro status:", resp.status_code)
@@ -89,18 +88,113 @@ def escanear_chollometro():
                 etiqueta_precio = precio_texto if precio_texto else "Ver en enlace"
                 info_dto = f" ({descuento}% dto.)" if descuento > 0 else ""
                 msg = (
-                    f"🚨 <b>CHOLLO DETECTADO</b> 🚨\n\n"
+                    f"🚨 <b>CHOLLO DETECTADO (Chollometro)</b> 🚨\n\n"
                     f"📦 <b>{titulo}</b>\n"
                     f"💰 Precio: <b>{etiqueta_precio}</b>{info_dto}\n"
                     f"🔗 <a href='{enlace}'>Ir al chollo</a>"
                 )
                 enviar_telegram(msg)
-                print("Alerta enviada:", titulo)
                 historial.append(enlace)
-
-        guardar_historial(historial)
     except Exception as e:
         print("Error en Chollometro:", e)
 
+# --- RADAR 2: TIENDAS DE PÁDEL (0€ o >= 80% de descuento) ---
+def escanear_tienda_padel(nombre_tienda, url_outlet, dominio_base, selector_tarjeta, historial):
+    try:
+        resp = requests.get(url_outlet, headers=HEADERS, timeout=20)
+        print(f"{nombre_tienda} status:", resp.status_code)
+        if resp.status_code != 200:
+            return
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+        tarjetas = soup.select(selector_tarjeta)
+        print(f"{nombre_tienda} productos detectados: {len(tarjetas)}")
+
+        for item in tarjetas:
+            enlace_el = item.select_one("a[href]")
+            if not enlace_el:
+                continue
+
+            enlace = enlace_el.get("href", "").strip()
+            if enlace.startswith("/"):
+                enlace = dominio_base + enlace
+
+            if not enlace.startswith("http") or enlace in historial:
+                continue
+
+            titulo_el = item.select_one("h2, h3, .product-title, .product-name, .name")
+            titulo = titulo_el.get_text(strip=True) if titulo_el else (enlace_el.get("title") or enlace_el.get_text(strip=True))
+            if not titulo or len(titulo) < 4:
+                continue
+
+            texto_tarjeta = item.get_text(" ", strip=True)
+
+            precios_raw = re.findall(r"(\d+[.,]\d{2})\s*€", texto_tarjeta)
+            valores = [float(p.replace(",", ".")) for p in precios_raw]
+
+            descuento = 0
+            for d in re.findall(r"-?\s*(\d{2,3})\s*%", texto_tarjeta):
+                if descuento < int(d) <= 100:
+                    descuento = int(d)
+
+            if len(valores) >= 2:
+                precio_actual = min(valores)
+                precio_original = max(valores)
+                if precio_original > precio_actual:
+                    calc = round(((precio_original - precio_actual) / precio_original) * 100)
+                    if calc > descuento:
+                        descuento = calc
+            elif len(valores) == 1:
+                precio_actual = valores
+            else:
+                continue
+
+            # CONDICIÓN DE ALERTA: Precio 0€ o descuento >= 80%
+            if precio_actual == 0.0 or descuento >= 80:
+                msg = (
+                    f"🎾 <b>CHOLLO PÁDEL ({nombre_tienda})</b> 🎾\n\n"
+                    f"📦 <b>{titulo}</b>\n"
+                    f"💰 Precio: <b>{precio_actual:.2f} €</b> ({descuento}% dto.)\n"
+                    f"🔗 <a href='{enlace}'>Ver en {nombre_tienda}</a>"
+                )
+                enviar_telegram(msg)
+                print(f"Alerta enviada ({nombre_tienda}):", titulo)
+                historial.append(enlace)
+
+    except Exception as e:
+        print(f"Error en {nombre_tienda}:", e)
+
 if __name__ == "__main__":
-    escanear_chollometro()
+    hist = cargar_historial()
+
+    # 1. Chollometro general
+    escanear_chollometro(hist)
+
+    # 2. Padelmania Outlet
+    escanear_tienda_padel(
+        nombre_tienda="Padelmania",
+        url_outlet="https://padelmania.com",
+        dominio_base="https://padelmania.com",
+        selector_tarjeta="article.product-miniature, .product-container, .ajax_block_product",
+        historial=hist
+    )
+
+    # 3. Pádel Ibérico Outlet
+    escanear_tienda_padel(
+        nombre_tienda="Pádel Ibérico",
+        url_outlet="https://padeliberico.es",
+        dominio_base="https://padeliberico.es",
+        selector_tarjeta="article.product-miniature, .product-container, .ajax_block_product",
+        historial=hist
+    )
+
+    # 4. Tienda Padelpoint Outlet
+    escanear_tienda_padel(
+        nombre_tienda="Padelpoint",
+        url_outlet="https://tiendapadelpoint.com",
+        dominio_base="https://tiendapadelpoint.com",
+        selector_tarjeta=".product-item, .product-miniature, article, .item-product",
+        historial=hist
+    )
+
+    guardar_historial(hist)
