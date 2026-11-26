@@ -24,9 +24,9 @@ def cargar_historial():
     return []
 
 def guardar_historial(historial):
-    # Aumentamos el límite a 1500 enlaces para cubrir las 3 páginas de cada tienda sin repetir
+    # Ampliamos a 10.000 enlaces para cubrir catálogos completos sin repetir avisos
     with open(ARCHIVO_HISTORIAL, "w", encoding="utf-8") as f:
-        json.dump(historial[-1500:], f, indent=2)
+        json.dump(historial[-10000:], f, indent=2)
 
 def enviar_telegram(mensaje):
     servidor = "https://api." + "telegram.org"
@@ -100,20 +100,29 @@ def escanear_chollometro(historial):
     except Exception as e:
         print("Error en Chollometro:", e)
 
-# --- RADAR 2: TIENDAS DE PÁDEL (Páginas 1, 2 y 3 | 0€ o >= 80%) ---
-def escanear_tienda_padel(nombre_tienda, urls_paginas, dominio_base, selector_tarjeta, historial):
+# --- RADAR 2: OUTLETS COMPLETOS (Paginación automática hasta fin de catálogo) ---
+def escanear_outlet_completo(nombre_tienda, url_base, param_pagina, dominio_base, selector_tarjeta, historial, max_paginas=35):
     total_detectados = 0
+    paginas_recorridas = 0
+    enlaces_sesion = set()
 
-    for num_pag, url_outlet in enumerate(urls_paginas, start=1):
+    for num_pag in range(1, max_paginas + 1):
+        url_actual = url_base if num_pag == 1 else f"{url_base}?{param_pagina}={num_pag}"
+
         try:
-            resp = requests.get(url_outlet, headers=HEADERS, timeout=20)
+            resp = requests.get(url_actual, headers=HEADERS, timeout=20)
             if resp.status_code != 200:
-                print(f"{nombre_tienda} (Pág {num_pag}) status: {resp.status_code}")
+                print(f"{nombre_tienda}: detenido en pág {num_pag} (status {resp.status_code})")
                 break
 
             soup = BeautifulSoup(resp.text, "html.parser")
             tarjetas = soup.select(selector_tarjeta)
-            total_detectados += len(tarjetas)
+
+            # Si no hay tarjetas, hemos llegado al final del outlet
+            if not tarjetas:
+                break
+
+            nuevos_en_esta_pagina = 0
 
             for item in tarjetas:
                 enlace_el = item.select_one("a[href]")
@@ -124,7 +133,17 @@ def escanear_tienda_padel(nombre_tienda, urls_paginas, dominio_base, selector_ta
                 if enlace.startswith("/"):
                     enlace = dominio_base + enlace
 
-                if not enlace.startswith("http") or enlace in historial:
+                if not enlace.startswith("http"):
+                    continue
+
+                # Comprobamos si este producto ya salió en páginas anteriores de esta misma pasada
+                if enlace in enlaces_sesion:
+                    continue
+                enlaces_sesion.add(enlace)
+                nuevos_en_esta_pagina += 1
+                total_detectados += 1
+
+                if enlace in historial:
                     continue
 
                 titulo_el = item.select_one("h2, h3, .product-title, .product-name, .product-item-link, .name")
@@ -150,7 +169,7 @@ def escanear_tienda_padel(nombre_tienda, urls_paginas, dominio_base, selector_ta
                         if calc > descuento:
                             descuento = calc
                 elif len(valores) == 1:
-                    precio_actual = valores
+                    precio_actual = valores[0]
                 else:
                     continue
 
@@ -166,13 +185,19 @@ def escanear_tienda_padel(nombre_tienda, urls_paginas, dominio_base, selector_ta
                     print(f"Alerta enviada ({nombre_tienda}):", titulo)
                     historial.append(enlace)
 
-            # Pausa breve de 1.5 segundos entre páginas para no saturar la tienda
-            time.sleep(1.5)
+            # Si la página no trajo ningún producto distinto a las anteriores, el catálogo terminó
+            if nuevos_en_esta_pagina == 0:
+                break
+
+            paginas_recorridas = num_pag
+            # Pausa de 1 segundo entre páginas para evitar bloqueos por exceso de peticiones
+            time.sleep(1.0)
 
         except Exception as e:
             print(f"Error en {nombre_tienda} (Pág {num_pag}):", e)
+            break
 
-    print(f"{nombre_tienda} -> Total productos analizados (3 páginas): {total_detectados}")
+    print(f"{nombre_tienda} -> {paginas_recorridas} páginas completas | {total_detectados} productos analizados")
 
 if __name__ == "__main__":
     hist = cargar_historial()
@@ -180,40 +205,31 @@ if __name__ == "__main__":
     # 1. Chollometro general
     escanear_chollometro(hist)
 
-    # 2. Padelmania Outlet (Páginas 1, 2 y 3)
-    escanear_tienda_padel(
+    # 2. Padelmania Outlet completo
+    escanear_outlet_completo(
         nombre_tienda="Padelmania",
-        urls_paginas=[
-            "https://padelmania.com",
-            "https://padelmania.com?page=2",
-            "https://padelmania.com?page=3"
-        ],
+        url_base="https://padelmania.com",
+        param_pagina="page",
         dominio_base="https://padelmania.com",
         selector_tarjeta="article.product-miniature, .product-container, .ajax_block_product",
         historial=hist
     )
 
-    # 3. Pádel Ibérico Outlet (Páginas 1, 2 y 3)
-    escanear_tienda_padel(
+    # 3. Pádel Ibérico Outlet completo
+    escanear_outlet_completo(
         nombre_tienda="Pádel Ibérico",
-        urls_paginas=[
-            "https://padeliberico.es",
-            "https://padeliberico.es?page=2",
-            "https://padeliberico.es?page=3"
-        ],
+        url_base="https://padeliberico.es",
+        param_pagina="page",
         dominio_base="https://padeliberico.es",
         selector_tarjeta="article.product-miniature, .product-container, .ajax_block_product",
         historial=hist
     )
 
-    # 4. Padel Nuestro Outlet (Páginas 1, 2 y 3)
-    escanear_tienda_padel(
+    # 4. Padel Nuestro Outlet completo
+    escanear_outlet_completo(
         nombre_tienda="Padel Nuestro",
-        urls_paginas=[
-            "https://padelnuestro.com",
-            "https://padelnuestro.com?p=2",
-            "https://padelnuestro.com?p=3"
-        ],
+        url_base="https://padelnuestro.com",
+        param_pagina="p",
         dominio_base="https://padelnuestro.com",
         selector_tarjeta=".product-item, .product-item-info, article.product-miniature, .item",
         historial=hist
