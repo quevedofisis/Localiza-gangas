@@ -24,7 +24,6 @@ def cargar_historial():
     return []
 
 def guardar_historial(historial):
-    # Ampliamos a 10.000 enlaces para cubrir catálogos completos sin repetir avisos
     with open(ARCHIVO_HISTORIAL, "w", encoding="utf-8") as f:
         json.dump(historial[-10000:], f, indent=2)
 
@@ -100,29 +99,18 @@ def escanear_chollometro(historial):
     except Exception as e:
         print("Error en Chollometro:", e)
 
-# --- RADAR 2: OUTLETS COMPLETOS (Paginación automática hasta fin de catálogo) ---
-def escanear_outlet_completo(nombre_tienda, url_base, param_pagina, dominio_base, selector_tarjeta, historial, max_paginas=35):
-    total_detectados = 0
-    paginas_recorridas = 0
-    enlaces_sesion = set()
+# --- RADAR 2: TIENDAS DE PÁDEL (Varias secciones y ordenación por precio/descuento) ---
+def escanear_secciones_padel(nombre_tienda, lista_urls, dominio_base, selector_tarjeta, historial):
+    enlaces_vistos_sesion = set()
 
-    for num_pag in range(1, max_paginas + 1):
-        url_actual = url_base if num_pag == 1 else f"{url_base}?{param_pagina}={num_pag}"
-
+    for url in lista_urls:
         try:
-            resp = requests.get(url_actual, headers=HEADERS, timeout=20)
+            resp = requests.get(url, headers=HEADERS, timeout=20)
             if resp.status_code != 200:
-                print(f"{nombre_tienda}: detenido en pág {num_pag} (status {resp.status_code})")
-                break
+                continue
 
             soup = BeautifulSoup(resp.text, "html.parser")
             tarjetas = soup.select(selector_tarjeta)
-
-            # Si no hay tarjetas, hemos llegado al final del outlet
-            if not tarjetas:
-                break
-
-            nuevos_en_esta_pagina = 0
 
             for item in tarjetas:
                 enlace_el = item.select_one("a[href]")
@@ -133,15 +121,10 @@ def escanear_outlet_completo(nombre_tienda, url_base, param_pagina, dominio_base
                 if enlace.startswith("/"):
                     enlace = dominio_base + enlace
 
-                if not enlace.startswith("http"):
+                if not enlace.startswith("http") or enlace in enlaces_vistos_sesion:
                     continue
 
-                # Comprobamos si este producto ya salió en páginas anteriores de esta misma pasada
-                if enlace in enlaces_sesion:
-                    continue
-                enlaces_sesion.add(enlace)
-                nuevos_en_esta_pagina += 1
-                total_detectados += 1
+                enlaces_vistos_sesion.add(enlace)
 
                 if enlace in historial:
                     continue
@@ -185,19 +168,12 @@ def escanear_outlet_completo(nombre_tienda, url_base, param_pagina, dominio_base
                     print(f"Alerta enviada ({nombre_tienda}):", titulo)
                     historial.append(enlace)
 
-            # Si la página no trajo ningún producto distinto a las anteriores, el catálogo terminó
-            if nuevos_en_esta_pagina == 0:
-                break
-
-            paginas_recorridas = num_pag
-            # Pausa de 1 segundo entre páginas para evitar bloqueos por exceso de peticiones
             time.sleep(1.0)
 
         except Exception as e:
-            print(f"Error en {nombre_tienda} (Pág {num_pag}):", e)
-            break
+            print(f"Error en {nombre_tienda} ({url}):", e)
 
-    print(f"{nombre_tienda} -> {paginas_recorridas} páginas completas | {total_detectados} productos analizados")
+    print(f"{nombre_tienda} -> Productos únicos analizados: {len(enlaces_vistos_sesion)}")
 
 if __name__ == "__main__":
     hist = cargar_historial()
@@ -205,31 +181,43 @@ if __name__ == "__main__":
     # 1. Chollometro general
     escanear_chollometro(hist)
 
-    # 2. Padelmania Outlet completo
-    escanear_outlet_completo(
+    # 2. Padelmania (Outlet + Ordenado por precio más bajo + Palas + Zapatillas)
+    escanear_secciones_padel(
         nombre_tienda="Padelmania",
-        url_base="https://padelmania.com",
-        param_pagina="page",
+        lista_urls=[
+            "https://padelmania.com",
+            "https://padelmania.com?order=product.price.asc",
+            "https://padelmania.com",
+            "https://padelmania.com"
+        ],
         dominio_base="https://padelmania.com",
         selector_tarjeta="article.product-miniature, .product-container, .ajax_block_product",
         historial=hist
     )
 
-    # 3. Pádel Ibérico Outlet completo
-    escanear_outlet_completo(
+    # 3. Pádel Ibérico (Outlet + Ordenado por precio más bajo + Palas + Zapatillas)
+    escanear_secciones_padel(
         nombre_tienda="Pádel Ibérico",
-        url_base="https://padeliberico.es",
-        param_pagina="page",
+        lista_urls=[
+            "https://padeliberico.es",
+            "https://padeliberico.es?order=product.price.asc",
+            "https://padeliberico.es",
+            "https://padeliberico.es"
+        ],
         dominio_base="https://padeliberico.es",
         selector_tarjeta="article.product-miniature, .product-container, .ajax_block_product",
         historial=hist
     )
 
-    # 4. Padel Nuestro Outlet completo
-    escanear_outlet_completo(
+    # 4. Padel Nuestro (Outlet + Palas + Zapatillas ordenados por precio más bajo)
+    escanear_secciones_padel(
         nombre_tienda="Padel Nuestro",
-        url_base="https://padelnuestro.com",
-        param_pagina="p",
+        lista_urls=[
+            "https://padelnuestro.com",
+            "https://padelnuestro.com?product_list_order=price&product_list_dir=asc",
+            "https://padelnuestro.com",
+            "https://padelnuestro.com"
+        ],
         dominio_base="https://padelnuestro.com",
         selector_tarjeta=".product-item, .product-item-info, article.product-miniature, .item",
         historial=hist
