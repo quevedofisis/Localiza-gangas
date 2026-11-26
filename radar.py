@@ -99,11 +99,35 @@ def escanear_chollometro(historial):
     except Exception as e:
         print("Error en Chollometro:", e)
 
-# --- RADAR 2: TIENDAS DE PÁDEL (Varias secciones y ordenación por precio/descuento) ---
-def escanear_secciones_padel(nombre_tienda, lista_urls, dominio_base, selector_tarjeta, historial):
+# --- RADAR 2: DESCUBRIDOR AUTOMÁTICO DE CATEGORÍAS EN TIENDAS DE PÁDEL ---
+def escanear_tienda_completa(nombre_tienda, url_inicio, dominio_base, selector_tarjeta, historial, max_secciones=12):
     enlaces_vistos_sesion = set()
+    urls_a_visitar = [url_inicio]
 
-    for url in lista_urls:
+    try:
+        # 1. Entramos en la página principal/outlet para descubrir los enlaces reales del menú
+        resp_inicio = requests.get(url_inicio, headers=HEADERS, timeout=20)
+        if resp_inicio.status_code == 200:
+            soup_inicio = BeautifulSoup(resp_inicio.text, "html.parser")
+            palabras_seccion = ["pala", "zapatilla", "paletero", "ropa", "outlet", "oferta", "liquidacion", "pelota", "accesorio"]
+
+            for a in soup_inicio.find_all("a", href=True):
+                href = a["href"].strip()
+                if href.startswith("/"):
+                    href = dominio_base + href
+
+                # Solo enlaces internos de categorías del menú (cortos y con palabras clave)
+                if href.startswith(dominio_base) and len(href) < 85 and "#" not in href and "?" not in href:
+                    if any(pal in href.lower() for pal in palabras_seccion):
+                        if href not in urls_a_visitar:
+                            urls_a_visitar.append(href)
+                        if len(urls_a_visitar) >= max_secciones:
+                            break
+    except Exception as e:
+        print(f"Error descubriendo secciones en {nombre_tienda}:", e)
+
+    # 2. Recorremos todas las secciones descubiertas
+    for url in urls_a_visitar:
         try:
             resp = requests.get(url, headers=HEADERS, timeout=20)
             if resp.status_code != 200:
@@ -152,7 +176,7 @@ def escanear_secciones_padel(nombre_tienda, lista_urls, dominio_base, selector_t
                         if calc > descuento:
                             descuento = calc
                 elif len(valores) == 1:
-                    precio_actual = valores[0]
+                    precio_actual = valores
                 else:
                     continue
 
@@ -170,10 +194,10 @@ def escanear_secciones_padel(nombre_tienda, lista_urls, dominio_base, selector_t
 
             time.sleep(1.0)
 
-        except Exception as e:
-            print(f"Error en {nombre_tienda} ({url}):", e)
+        except Exception:
+            continue
 
-    print(f"{nombre_tienda} -> Productos únicos analizados: {len(enlaces_vistos_sesion)}")
+    print(f"{nombre_tienda} -> {len(urls_a_visitar)} secciones revisadas | {len(enlaces_vistos_sesion)} productos únicos")
 
 if __name__ == "__main__":
     hist = cargar_historial()
@@ -181,43 +205,28 @@ if __name__ == "__main__":
     # 1. Chollometro general
     escanear_chollometro(hist)
 
-    # 2. Padelmania (Outlet + Ordenado por precio más bajo + Palas + Zapatillas)
-    escanear_secciones_padel(
+    # 2. Padelmania (Descubre automáticamente Outlet, Palas, Zapatillas, Ropa, etc.)
+    escanear_tienda_completa(
         nombre_tienda="Padelmania",
-        lista_urls=[
-            "https://padelmania.com",
-            "https://padelmania.com?order=product.price.asc",
-            "https://padelmania.com",
-            "https://padelmania.com"
-        ],
+        url_inicio="https://padelmania.com",
         dominio_base="https://padelmania.com",
         selector_tarjeta="article.product-miniature, .product-container, .ajax_block_product",
         historial=hist
     )
 
-    # 3. Pádel Ibérico (Outlet + Ordenado por precio más bajo + Palas + Zapatillas)
-    escanear_secciones_padel(
+    # 3. Pádel Ibérico (Descubre automáticamente Outlet, Palas, Zapatillas, Ropa, etc.)
+    escanear_tienda_completa(
         nombre_tienda="Pádel Ibérico",
-        lista_urls=[
-            "https://padeliberico.es",
-            "https://padeliberico.es?order=product.price.asc",
-            "https://padeliberico.es",
-            "https://padeliberico.es"
-        ],
+        url_inicio="https://padeliberico.es",
         dominio_base="https://padeliberico.es",
         selector_tarjeta="article.product-miniature, .product-container, .ajax_block_product",
         historial=hist
     )
 
-    # 4. Padel Nuestro (Outlet + Palas + Zapatillas ordenados por precio más bajo)
-    escanear_secciones_padel(
+    # 4. Padel Nuestro (Descubre automáticamente Outlet, Palas, Zapatillas, Ropa, etc.)
+    escanear_tienda_completa(
         nombre_tienda="Padel Nuestro",
-        lista_urls=[
-            "https://padelnuestro.com",
-            "https://padelnuestro.com?product_list_order=price&product_list_dir=asc",
-            "https://padelnuestro.com",
-            "https://padelnuestro.com"
-        ],
+        url_inicio="https://padelnuestro.com",
         dominio_base="https://padelnuestro.com",
         selector_tarjeta=".product-item, .product-item-info, article.product-miniature, .item",
         historial=hist
